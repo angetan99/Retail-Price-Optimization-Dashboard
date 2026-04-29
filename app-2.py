@@ -47,28 +47,29 @@ def load_data():
 
 # 3. Model training
 @st.cache_resource
-def train_models(df, categories):
+def train_models():
+    df, categories = load_data()
+
     features = [
         'comp_price_ratio','comp_std','pct_price_change',
         'freight_ratio','sin_month','cos_month'
     ]
 
-    # Add category interactions only
     interaction_cols = [f'{cat}_price' for cat in categories]
     features += interaction_cols
 
     X = df[features]
     y = df['log_qty']
 
-    # Ridge for prediction
+    # Ridge for prediction stability
     ridge = Ridge(alpha=1.0)
     ridge.fit(X, y)
 
-    # OLS for interpretability
+    # OLS for interpretability dashboard
     X_ols = sm.add_constant(X)
     ols = sm.OLS(y, X_ols).fit()
 
-    return ridge, ols, features
+    return ridge, ols, features, categories
 
 # 4. Prediction function
 def predict_demand(model, features, input_dict, categories):
