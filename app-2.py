@@ -130,7 +130,7 @@ def plot_coefficients(ols_model):
 st.title("Retail Demand & Pricing Tool")
 
 df, categories = load_data()
-ridge, ols, features = train_models(df, categories)
+ridge, ols, features, categories = train_models()
 
 tab1, tab2, tab3 = st.tabs(["Demand Predictor","Insights","How It Works"])
 
