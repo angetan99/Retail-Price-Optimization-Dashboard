@@ -215,21 +215,22 @@ def inject_css():
         margin: 20px 0;
     }
     .nudge-box {
-        background: rgba(255,255,255,0.12);
+        background: #FFF4F2;
         border-left: 3px solid #E8523A;
-        border-radius: 4px;
-        padding: 10px 14px;
+        border-radius: 6px;
+        padding: 11px 15px;
         font-size: 0.83rem;
-        color: rgba(255,255,255,0.95);
-        margin-top: 14px;
-        line-height: 1.5;
+        color: #3D4A5C;
+        margin-top: 10px;
+        line-height: 1.55;
     }
     .price-change-box {
-        background: rgba(255,255,255,0.10);
+        background: #EBF1FA;
+        border-left: 3px solid #2E7DD1;
         border-radius: 6px;
-        padding: 10px 14px;
+        padding: 11px 15px;
         font-size: 0.83rem;
-        color: rgba(255,255,255,0.85);
+        color: #3D4A5C;
         margin-top: 10px;
     }
 
@@ -604,26 +605,7 @@ with tab1:
             rev_delta   = (qty_lower * lower_price) - revenue
             show_nudge  = qty_lower > qty_pred
 
-            nudge_html = ""
-            if show_nudge:
-                arrow = "▲" if rev_delta >= 0 else "▼"
-                nudge_html = f"""
-                <div class="nudge-box">
-                  💡 <strong>Price sensitivity alert:</strong> A 5% cut to R${lower_price:.2f}
-                  could lift volume to ~{qty_lower:,} units
-                  ({arrow} R${abs(rev_delta):,.0f} net revenue impact).
-                </div>"""
-
-            price_change_html = ""
-            if abs(pct_change) >= 0.01:
-                direction = "increase" if pct_change > 0 else "decrease"
-                icon = "↑" if pct_change > 0 else "↓"
-                price_change_html = f"""
-                <div class="price-change-box">
-                  {icon} Price is a <strong>{abs(pct_change):.1f}% {direction}</strong>
-                  from last month (R${lag_price:.2f})
-                </div>"""
-
+            # ── Main result panel (no nested dynamic HTML) ──
             st.markdown(f"""
             <div class="result-panel">
               <div class="result-label">Estimated Units Sold</div>
@@ -641,10 +623,28 @@ with tab1:
                 Rating {product_score:.1f} ★ &nbsp;|&nbsp;
                 {holiday} holiday{'s' if holiday != 1 else ''}
               </div>
-              {price_change_html}
-              {nudge_html}
             </div>
             """, unsafe_allow_html=True)
+
+            # ── Price change callout — separate render call ──
+            if abs(pct_change) >= 0.01:
+                direction = "increase" if pct_change > 0 else "decrease"
+                icon = "↑" if pct_change > 0 else "↓"
+                st.markdown(f"""
+                <div class="price-change-box">
+                  {icon} Price is a <strong>{abs(pct_change):.1f}% {direction}</strong>
+                  from last month (R${lag_price:.2f})
+                </div>""", unsafe_allow_html=True)
+
+            # ── Nudge — separate render call ──
+            if show_nudge:
+                arrow = "▲" if rev_delta >= 0 else "▼"
+                st.markdown(f"""
+                <div class="nudge-box">
+                  💡 <strong>Price sensitivity alert:</strong> A 5% cut to R${lower_price:.2f}
+                  could lift volume to ~{qty_lower:,} units
+                  ({arrow} R${abs(rev_delta):,.0f} net revenue impact).
+                </div>""", unsafe_allow_html=True)
 
         else:
             st.markdown("""
