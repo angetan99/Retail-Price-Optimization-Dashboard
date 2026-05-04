@@ -456,15 +456,30 @@ def predict_quantity(pipeline, unit_price, lag_price, freight_price,
 # Elasticity & Sensitivity Analytics
 # =============================================================================
 
-def compute_elasticity(pipeline, base_kwargs: dict, delta: float = 0.01) -> float:
+def _predict_quantity_raw(pipeline, unit_price, lag_price, freight_price,
+                          product_score, holiday, category, month) -> float:
+    """Return the raw (unrounded) predicted quantity for elasticity calculations."""
+    row = {
+        "unit_price": unit_price, "lag_price": lag_price,
+        "freight_price": freight_price, "product_score": product_score,
+        "holiday": holiday, "product_category_name": category,
+        "month": month, "qty": 1,
+    }
+    df_row = engineer_features(pd.DataFrame([row]))
+    log_pred = pipeline.predict(df_row[CATEGORICAL_FEATURES + NUMERIC_FEATURES])[0]
+    return np.exp(log_pred)
+
+
+def compute_elasticity(pipeline, base_kwargs: dict, delta: float = 0.05) -> float:
     """Numerical price elasticity at the current price point.
+    Uses raw float predictions (not rounded) and a 5% delta to avoid integer-rounding
+    artifacts that would make all elasticities identically 0.
     Returns e.g. -1.8 meaning a 1% price increase → 1.8% demand drop."""
     p = base_kwargs["unit_price"]
-    q = predict_quantity(pipeline, **base_kwargs)
-    q_up = predict_quantity(pipeline, **{**base_kwargs, "unit_price": p * (1 + delta)})
-    pct_dq = (q_up - q) / max(q, 1)
-    pct_dp = delta
-    return pct_dq / pct_dp
+    q = _predict_quantity_raw(pipeline, **base_kwargs)
+    q_up = _predict_quantity_raw(pipeline, **{**base_kwargs, "unit_price": p * (1 + delta)})
+    pct_dq = (q_up - q) / max(q, 1e-6)
+    return pct_dq / delta
 
 
 def compute_category_elasticities(pipeline, base_kwargs: dict) -> dict:
@@ -477,14 +492,16 @@ def compute_category_elasticities(pipeline, base_kwargs: dict) -> dict:
 
 
 def compute_freight_sensitivity(pipeline, base_kwargs: dict) -> dict:
-    """Effect of halving shipping cost on predicted demand."""
+    """Effect of halving shipping cost on predicted demand. Uses raw floats to avoid rounding."""
     freight_price = base_kwargs["freight_price"]
-    qty_base = predict_quantity(pipeline, **base_kwargs)
+    qty_base_raw = _predict_quantity_raw(pipeline, **base_kwargs)
+    qty_base = predict_quantity(pipeline, **base_kwargs)   # rounded, for display
     lower_freight = max(0.0, freight_price * 0.5)
+    qty_lower_raw = _predict_quantity_raw(pipeline, **{**base_kwargs, "freight_price": lower_freight})
     qty_lower = predict_quantity(pipeline, **{**base_kwargs, "freight_price": lower_freight})
-    if qty_base > 0 and freight_price > 0:
-        freight_elasticity = ((qty_lower - qty_base) / qty_base) / (-0.5)
-        pct_lift = (qty_lower - qty_base) / qty_base * 100
+    if qty_base_raw > 0 and freight_price > 0:
+        freight_elasticity = ((qty_lower_raw - qty_base_raw) / qty_base_raw) / (-0.5)
+        pct_lift = (qty_lower_raw - qty_base_raw) / qty_base_raw * 100
     else:
         freight_elasticity = 0.0
         pct_lift = 0.0
@@ -534,9 +551,10 @@ def chart_feature_importance(importance_dict: dict):
                 if not k.startswith("product_category_name")}
     filtered["Product Category"] = cat_importance
 
-    df_plot = pd.DataFrame(list(filtered.items()), columns=["label", "importance"]).sort_values("importance")
+    df_plot = pd.DataFrame(list(filtered.items()), columns=["label", "importance"]).sort_values("importance").reset_index(drop=True)
 
-    colors = [ACCENT if i == len(df_plot) - 1 else SECONDARY for i in range(len(df_plot))]
+    max_importance = df_plot["importance"].max()
+    colors = [ACCENT if v == max_importance else SECONDARY for v in df_plot["importance"]]
 
     fig, ax = plt.subplots(figsize=(7, 3.8))
     bars = ax.barh(df_plot["label"], df_plot["importance"], color=colors, height=0.55)
@@ -620,12 +638,12 @@ def chart_elasticity_bars(elasticities: dict, highlight_category: str = None):
     vals_s, labels_s, cats_s = zip(*sorted_pairs)
 
     colors = []
-    for cat in cats_s:
+    for i, (cat, val) in enumerate(zip(cats_s, vals_s)):
         if cat == highlight_category:
             colors.append(ACCENT)
-        elif vals_s[list(cats_s).index(cat)] < -1.5:
+        elif val < -1.5:
             colors.append("#C0392B")   # deep red — highly elastic
-        elif vals_s[list(cats_s).index(cat)] < -0.8:
+        elif val < -0.8:
             colors.append(SECONDARY)
         else:
             colors.append("#5BA85E")   # green — inelastic (demand holds)
