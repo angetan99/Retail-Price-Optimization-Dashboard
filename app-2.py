@@ -224,6 +224,16 @@ def inject_css():
         margin-top: 10px;
         line-height: 1.55;
     }
+    .shipping-nudge-box {
+        background: #F0F7FF;
+        border-left: 3px solid #2E7DD1;
+        border-radius: 6px;
+        padding: 11px 15px;
+        font-size: 0.83rem;
+        color: #3D4A5C;
+        margin-top: 10px;
+        line-height: 1.55;
+    }
     .price-change-box {
         background: #EBF1FA;
         border-left: 3px solid #2E7DD1;
@@ -326,6 +336,38 @@ def inject_css():
         margin: 3px 3px 3px 0;
     }
 
+    /* ── Elasticity table ── */
+    .elasticity-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.83rem;
+    }
+    .elasticity-table th {
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6B7A8D;
+        padding: 6px 10px;
+        border-bottom: 2px solid #D6E0EF;
+        text-align: left;
+    }
+    .elasticity-table td {
+        padding: 7px 10px;
+        color: #3D4A5C;
+        border-bottom: 1px solid #EBF1FA;
+        vertical-align: middle;
+    }
+    .elasticity-table tr:last-child td { border-bottom: none; }
+    .elasticity-table .elas-val {
+        font-weight: 600;
+        font-family: 'DM Serif Display', serif;
+        font-size: 0.95rem;
+    }
+    .elas-elastic   { color: #C0392B; }
+    .elas-moderate  { color: #2E7DD1; }
+    .elas-inelastic { color: #5BA85E; }
+
     </style>
     """, unsafe_allow_html=True)
 
@@ -408,6 +450,51 @@ def predict_quantity(pipeline, unit_price, lag_price, freight_price,
     df_row = engineer_features(pd.DataFrame([row]))
     log_pred = pipeline.predict(df_row[CATEGORICAL_FEATURES + NUMERIC_FEATURES])[0]
     return max(1, round(np.exp(log_pred)))
+
+
+# =============================================================================
+# Elasticity & Sensitivity Analytics
+# =============================================================================
+
+def compute_elasticity(pipeline, base_kwargs: dict, delta: float = 0.01) -> float:
+    """Numerical price elasticity at the current price point.
+    Returns e.g. -1.8 meaning a 1% price increase → 1.8% demand drop."""
+    p = base_kwargs["unit_price"]
+    q = predict_quantity(pipeline, **base_kwargs)
+    q_up = predict_quantity(pipeline, **{**base_kwargs, "unit_price": p * (1 + delta)})
+    pct_dq = (q_up - q) / max(q, 1)
+    pct_dp = delta
+    return pct_dq / pct_dp
+
+
+def compute_category_elasticities(pipeline, base_kwargs: dict) -> dict:
+    """Compute price elasticity for every category at the same reference inputs."""
+    results = {}
+    for cat in CATEGORIES:
+        kwargs = {**base_kwargs, "category": cat}
+        results[cat] = compute_elasticity(pipeline, kwargs)
+    return results
+
+
+def compute_freight_sensitivity(pipeline, base_kwargs: dict) -> dict:
+    """Effect of halving shipping cost on predicted demand."""
+    freight_price = base_kwargs["freight_price"]
+    qty_base = predict_quantity(pipeline, **base_kwargs)
+    lower_freight = max(0.0, freight_price * 0.5)
+    qty_lower = predict_quantity(pipeline, **{**base_kwargs, "freight_price": lower_freight})
+    if qty_base > 0 and freight_price > 0:
+        freight_elasticity = ((qty_lower - qty_base) / qty_base) / (-0.5)
+        pct_lift = (qty_lower - qty_base) / qty_base * 100
+    else:
+        freight_elasticity = 0.0
+        pct_lift = 0.0
+    return {
+        "qty_base": qty_base,
+        "qty_lower": qty_lower,
+        "lower_freight": lower_freight,
+        "pct_lift": pct_lift,
+        "freight_elasticity": freight_elasticity,
+    }
 
 
 # =============================================================================
@@ -519,6 +606,47 @@ def chart_category_bars(pipeline, base_kwargs: dict):
     ax.set_xlabel("Predicted Units Sold")
     ax.set_title("Demand by Category (Current Price)")
     ax.set_xlim(0, max(qtys_s) * 1.18)
+    _apply_chart_style(fig, ax)
+    return fig
+
+
+def chart_elasticity_bars(elasticities: dict, highlight_category: str = None):
+    """Horizontal bar chart of price elasticity coefficients per category."""
+    labels = [CATEGORY_LABELS[c] for c in CATEGORIES]
+    values = [elasticities[c] for c in CATEGORIES]
+
+    # Sort by elasticity (most negative = most elastic, at top)
+    sorted_pairs = sorted(zip(values, labels, CATEGORIES), key=lambda x: x[0])
+    vals_s, labels_s, cats_s = zip(*sorted_pairs)
+
+    colors = []
+    for cat in cats_s:
+        if cat == highlight_category:
+            colors.append(ACCENT)
+        elif vals_s[list(cats_s).index(cat)] < -1.5:
+            colors.append("#C0392B")   # deep red — highly elastic
+        elif vals_s[list(cats_s).index(cat)] < -0.8:
+            colors.append(SECONDARY)
+        else:
+            colors.append("#5BA85E")   # green — inelastic (demand holds)
+
+    fig, ax = plt.subplots(figsize=(7, 3.8))
+    bars = ax.barh(list(labels_s), list(vals_s), color=colors, height=0.55)
+
+    # Annotate with "10% increase → X% demand"
+    for bar, val in zip(bars, vals_s):
+        implied = val * 10
+        sign = "+" if implied >= 0 else ""
+        ax.text(
+            min(val - 0.02, -0.02), bar.get_y() + bar.get_height() / 2,
+            f"{sign}{implied:.1f}% demand per 10% ↑ price",
+            va="center", ha="right", fontsize=7.5, color="#6B7A8D",
+        )
+
+    ax.axvline(0, color="#D6E0EF", linewidth=1.2)
+    ax.set_xlabel("Price Elasticity Coefficient")
+    ax.set_title("Price Elasticity by Category")
+    ax.set_xlim(min(vals_s) * 1.6, 0.15)
     _apply_chart_style(fig, ax)
     return fig
 
@@ -646,6 +774,18 @@ with tab1:
                   ({arrow} R${abs(rev_delta):,.0f} net revenue impact).
                 </div>""", unsafe_allow_html=True)
 
+            # ── Shipping nudge ──
+            if freight_price > 0:
+                fs = compute_freight_sensitivity(pipeline, base_kwargs)
+                if fs["pct_lift"] > 0.5:
+                    st.markdown(f"""
+                    <div class="shipping-nudge-box">
+                      🚚 <strong>Shipping sensitivity:</strong> Cutting shipping from
+                      R${freight_price:.2f} to R${fs['lower_freight']:.2f} (−50%) could lift demand
+                      by ~{fs['pct_lift']:.1f}% ({fs['qty_base']:,} → {fs['qty_lower']:,} units).
+                      Freight elasticity: {fs['freight_elasticity']:.2f}.
+                    </div>""", unsafe_allow_html=True)
+
         else:
             st.markdown("""
             <div class="result-panel-empty">
@@ -732,7 +872,75 @@ with tab2:
         plt.close(fig_cat)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+
+    # ── Elasticity section ─────────────────────────────────────────────────
+    st.markdown('<p class="section-label">Elasticity at a Glance</p>', unsafe_allow_html=True)
+
+    elast_ref_kwargs = dict(
+        unit_price=89.90, lag_price=89.90, freight_price=14.0,
+        product_score=4.1, holiday=1, category="health_beauty", month=5,
+    )
+    category_elasticities = compute_category_elasticities(pipeline, elast_ref_kwargs)
+
+    el1, el2 = st.columns(2, gap="large")
+
+    with el1:
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        fig_elas = chart_elasticity_bars(category_elasticities)
+        st.pyplot(fig_elas, use_container_width=True)
+        plt.close(fig_elas)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with el2:
+        st.markdown('<div class="model-card">', unsafe_allow_html=True)
+        st.markdown("#### Price Elasticity Table")
+        st.markdown(
+            "<p style='font-size:0.8rem;color:#6B7A8D;margin-bottom:12px;'>"
+            "Computed at R$89.90 reference price. Elasticity = % demand change per 1% price change.</p>",
+            unsafe_allow_html=True,
+        )
+
+        rows_html = ""
+        for cat in sorted(category_elasticities, key=lambda c: category_elasticities[c]):
+            e = category_elasticities[cat]
+            implied = e * 10
+            sign = "+" if implied >= 0 else ""
+            if e < -1.5:
+                cls = "elas-elastic"
+                label = "Elastic"
+            elif e < -0.8:
+                cls = "elas-moderate"
+                label = "Moderate"
+            else:
+                cls = "elas-inelastic"
+                label = "Inelastic"
+            rows_html += f"""
+            <tr>
+              <td>{CATEGORY_LABELS[cat]}</td>
+              <td><span class="elas-val {cls}">{e:.2f}</span></td>
+              <td style='color:#6B7A8D;'>{sign}{implied:.1f}%</td>
+              <td><span class="insight-pill">{label}</span></td>
+            </tr>"""
+
+        st.markdown(f"""
+        <table class="elasticity-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Elasticity</th>
+              <th>10% price ↑ →</th>
+              <th>Sensitivity</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+        <p style='font-size:0.74rem;color:#6B7A8D;margin-top:10px;'>
+          <strong>Red</strong> = highly elastic (avoid price hikes) &nbsp;·&nbsp;
+          <strong>Green</strong> = inelastic (pricing power)
+        </p>
+        """, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Methodology cards ─────────────────────────────────────────────────
     st.markdown('<p class="section-label">Methodology</p>', unsafe_allow_html=True)
